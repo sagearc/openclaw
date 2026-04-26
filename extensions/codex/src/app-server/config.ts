@@ -8,6 +8,26 @@ export type CodexAppServerApprovalPolicy = "never" | "on-request" | "on-failure"
 export type CodexAppServerSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexAppServerApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
 
+export type CodexComputerUseConfig = {
+  enabled?: boolean;
+  autoInstall?: boolean;
+  marketplaceSource?: string;
+  marketplacePath?: string;
+  marketplaceName?: string;
+  pluginName?: string;
+  mcpServerName?: string;
+};
+
+export type ResolvedCodexComputerUseConfig = {
+  enabled: boolean;
+  autoInstall: boolean;
+  pluginName: string;
+  mcpServerName: string;
+  marketplaceSource?: string;
+  marketplacePath?: string;
+  marketplaceName?: string;
+};
+
 export type CodexAppServerStartOptions = {
   transport: CodexAppServerTransportMode;
   command: string;
@@ -33,6 +53,7 @@ export type CodexPluginConfig = {
     enabled?: boolean;
     timeoutMs?: number;
   };
+  computerUse?: CodexComputerUseConfig;
   appServer?: {
     mode?: CodexAppServerPolicyMode;
     transport?: CodexAppServerTransportMode;
@@ -66,6 +87,19 @@ export const CODEX_APP_SERVER_CONFIG_KEYS = [
   "defaultWorkspaceDir",
 ] as const;
 
+export const CODEX_COMPUTER_USE_CONFIG_KEYS = [
+  "enabled",
+  "autoInstall",
+  "marketplaceSource",
+  "marketplacePath",
+  "marketplaceName",
+  "pluginName",
+  "mcpServerName",
+] as const;
+
+export const DEFAULT_CODEX_COMPUTER_USE_PLUGIN_NAME = "computer-use";
+export const DEFAULT_CODEX_COMPUTER_USE_MCP_SERVER_NAME = "computer-use";
+
 const codexAppServerTransportSchema = z.enum(["stdio", "websocket"]);
 const codexAppServerPolicyModeSchema = z.enum(["yolo", "guardian"]);
 const codexAppServerApprovalPolicySchema = z.enum([
@@ -87,6 +121,18 @@ const codexPluginConfigSchema = z
       .object({
         enabled: z.boolean().optional(),
         timeoutMs: z.number().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    computerUse: z
+      .object({
+        enabled: z.boolean().optional(),
+        autoInstall: z.boolean().optional(),
+        marketplaceSource: z.string().optional(),
+        marketplacePath: z.string().optional(),
+        marketplaceName: z.string().optional(),
+        pluginName: z.string().optional(),
+        mcpServerName: z.string().optional(),
       })
       .strict()
       .optional(),
@@ -164,6 +210,57 @@ export function resolveCodexAppServerRuntimeOptions(
       resolveApprovalsReviewer(config.approvalsReviewer) ??
       (policyMode === "guardian" ? "auto_review" : "user"),
     ...(serviceTier ? { serviceTier } : {}),
+  };
+}
+
+export function resolveCodexComputerUseConfig(
+  params: {
+    pluginConfig?: unknown;
+    env?: NodeJS.ProcessEnv;
+    overrides?: Partial<CodexComputerUseConfig>;
+  } = {},
+): ResolvedCodexComputerUseConfig {
+  const env = params.env ?? process.env;
+  const config = readCodexPluginConfig(params.pluginConfig).computerUse ?? {};
+  const marketplaceSource =
+    readNonEmptyString(params.overrides?.marketplaceSource) ??
+    readNonEmptyString(config.marketplaceSource) ??
+    readNonEmptyString(env.OPENCLAW_CODEX_COMPUTER_USE_MARKETPLACE_SOURCE);
+  const marketplacePath =
+    readNonEmptyString(params.overrides?.marketplacePath) ??
+    readNonEmptyString(config.marketplacePath) ??
+    readNonEmptyString(env.OPENCLAW_CODEX_COMPUTER_USE_MARKETPLACE_PATH);
+  const marketplaceName =
+    readNonEmptyString(params.overrides?.marketplaceName) ??
+    readNonEmptyString(config.marketplaceName) ??
+    readNonEmptyString(env.OPENCLAW_CODEX_COMPUTER_USE_MARKETPLACE_NAME);
+  const autoInstall =
+    params.overrides?.autoInstall ??
+    config.autoInstall ??
+    readBooleanEnv(env.OPENCLAW_CODEX_COMPUTER_USE_AUTO_INSTALL) ??
+    false;
+  const enabled =
+    params.overrides?.enabled ??
+    config.enabled ??
+    readBooleanEnv(env.OPENCLAW_CODEX_COMPUTER_USE) ??
+    Boolean(autoInstall || marketplaceSource || marketplacePath || marketplaceName);
+
+  return {
+    enabled,
+    autoInstall,
+    pluginName:
+      readNonEmptyString(params.overrides?.pluginName) ??
+      readNonEmptyString(config.pluginName) ??
+      readNonEmptyString(env.OPENCLAW_CODEX_COMPUTER_USE_PLUGIN_NAME) ??
+      DEFAULT_CODEX_COMPUTER_USE_PLUGIN_NAME,
+    mcpServerName:
+      readNonEmptyString(params.overrides?.mcpServerName) ??
+      readNonEmptyString(config.mcpServerName) ??
+      readNonEmptyString(env.OPENCLAW_CODEX_COMPUTER_USE_MCP_SERVER_NAME) ??
+      DEFAULT_CODEX_COMPUTER_USE_MCP_SERVER_NAME,
+    ...(marketplaceSource ? { marketplaceSource } : {}),
+    ...(marketplacePath ? { marketplacePath } : {}),
+    ...(marketplaceName ? { marketplaceName } : {}),
   };
 }
 
@@ -252,6 +349,20 @@ function normalizeHeaders(value: unknown): Record<string, string> {
       .map(([key, child]) => [key.trim(), readNonEmptyString(child)] as const)
       .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1])),
   );
+}
+
+function readBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
 }
 
 function resolveArgs(configArgs: unknown, envArgs: string | undefined): string[] {
